@@ -3,31 +3,23 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using System.Windows.Forms;
-
-using System;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Windows.Forms;
-
-using System;
-using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Windows.Forms;
 
 namespace lab3
 {
     public partial class Task3Form : Form
     {
-        private Point[] triangleVertices = new Point[3];
-        private Color[] vertexColors = new Color[3];
-        private int vertexCount = 0;
         private bool isDrawing = false;
         private int colorSchemeIndex = 0;
         private readonly Color[][] colorSchemes;
+        private Point[] triangleVertices = new Point[3];
+        private Color[] vertexColors = new Color[3];
+        private int vertexCount = 0;
+    
 
         public Task3Form()
         {
@@ -38,7 +30,6 @@ namespace lab3
                 new Color[] { Color.FromArgb(0, 38, 66), Color.FromArgb(132, 0, 50), Color.FromArgb(229, 149, 0) },
                 new Color[] { Color.FromArgb(114, 24, 23), Color.FromArgb(250, 159, 66), Color.FromArgb(43, 65, 98) }
             };
-
             vertexColors = colorSchemes[0]; 
             InitializeComponent();
         }
@@ -51,7 +42,6 @@ namespace lab3
             BackColor = Color.White;
             DoubleBuffered = true;
 
-            // Кнопка очистки
             var clearButton = new Button()
             {
                 Text = "Очистить",
