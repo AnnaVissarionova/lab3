@@ -16,5 +16,10 @@ namespace lab3
         {
             InitializeComponent();
         }
+
+        private void Task1bForm_Load(object sender, EventArgs e)
+        {
+
+        }
     }
 }
