@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace lab3
@@ -10,9 +12,11 @@ namespace lab3
         private Bitmap originalImage;
         private Bitmap displayImage;
         private List<Point> boundaryPoints = new List<Point>();
-        private List<Point> innerBoundaryPoints = new List<Point>();
-        private Color boundaryColor = Color.Red;
-        private Color innerBoundaryColor = Color.Blue;
+        private Color fillColor = Color.Red;
+        private Color boundaryColor = Color.Blue;
+        private int tolerance = 50;
+        private bool[,] visitedMap;
+        private bool[,] filledMap;
 
         public Task1cForm()
         {
@@ -22,7 +26,7 @@ namespace lab3
         private void btnLoadImage_Click(object sender, EventArgs e)
         {
             OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "Image Files|*.jpg;*.png;";
+            openFileDialog.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.bmp;*.gif";
 
             if (openFileDialog.ShowDialog() == DialogResult.OK)
             {
@@ -30,10 +34,20 @@ namespace lab3
                 {
                     originalImage = new Bitmap(openFileDialog.FileName);
                     displayImage = new Bitmap(originalImage);
+
+                    // Устанавливаем SizeMode в Normal для точного соответствия координат
+                    pictureBox.SizeMode = PictureBoxSizeMode.Normal;
                     pictureBox.Image = displayImage;
+
+                    // Масштабируем PictureBox под размер изображения
+                    pictureBox.Size = new Size(originalImage.Width, originalImage.Height);
+
+                    // Инициализируем карты
+                    visitedMap = new bool[originalImage.Width, originalImage.Height];
+                    filledMap = new bool[originalImage.Width, originalImage.Height];
+
                     boundaryPoints.Clear();
-                    innerBoundaryPoints.Clear();
-                    lblStatus.Text = "Изображение загружено. Кликните внутри области.";
+                    lblStatus.Text = "Изображение загружено. Кликните по области для выделения.";
                 }
                 catch (Exception ex)
                 {
@@ -48,371 +62,229 @@ namespace lab3
 
             if (e.Button == MouseButtons.Left)
             {
-                // Находим внешнюю границу
-                FindExternalBoundary(e.X, e.Y);
+                // Очищаем предыдущее выделение
+                ClearPreviousSelection();
 
-                // Сканируем внутреннюю область для поиска отверстий
-                ScanForInnerBoundaries();
+                // Используем прямые координаты мыши (без масштабирования)
+                int x = e.X;
+                int y = e.Y;
 
-                // Рисуем все найденные границы
-                DrawAllBoundaries();
-
-                pictureBox.Refresh();
-                lblStatus.Text = $"Внешних точек: {boundaryPoints.Count}, внутренних: {innerBoundaryPoints.Count}";
-            }
-        }
-
-        // Алгоритм нахождения внешней границы (трассировка контура)
-        private void FindExternalBoundary(int startX, int startY)
-        {
-            boundaryPoints.Clear();
-            innerBoundaryPoints.Clear();
-
-            if (startX < 0 || startX >= originalImage.Width ||
-                startY < 0 || startY >= originalImage.Height)
-                return;
-
-            // Определяем цвет фона и объекта
-            Color backgroundColor = originalImage.GetPixel(0, 0);
-            Color objectColor = originalImage.GetPixel(startX, startY);
-
-            // Если кликнули по фону, ищем ближайший объект
-            if (ColorsAreSimilar(objectColor, backgroundColor))
-            {
-                objectColor = FindObjectColor(startX, startY, backgroundColor);
-            }
-
-            // Находим стартовую точку на границе
-            Point startPoint = FindBoundaryStartPoint(startX, startY, backgroundColor, objectColor);
-            if (startPoint.X == -1) return;
-
-            // Алгоритм трассировки границы (Moore-Neighbor)
-            Point current = startPoint;
-            Point[] directions = {
-                new Point(1, 0),   // вправо
-                new Point(1, 1),   // вправо-вниз
-                new Point(0, 1),   // вниз
-                new Point(-1, 1),  // влево-вниз
-                new Point(-1, 0),  // влево
-                new Point(-1, -1), // влево-вверх
-                new Point(0, -1),  // вверх
-                new Point(1, -1)   // вправо-вверх
-            };
-
-            int startDir = 0;
-            int currentDir = startDir;
-
-            do
-            {
-                boundaryPoints.Add(current);
-
-                // Ищем следующую граничную точку
-                bool found = false;
-                for (int i = 0; i < 8; i++)
+                if (x >= 0 && x < originalImage.Width &&
+                    y >= 0 && y < originalImage.Height)
                 {
-                    int checkDir = (currentDir + 6 + i) % 8; // Начинаем поиск с левого соседа
-                    Point dir = directions[checkDir];
-                    Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
+                    // Быстрая заливка с использованием LockBits
+                    FastMagicWandFill(x, y);
 
-                    if (neighbor.X >= 0 && neighbor.X < originalImage.Width &&
-                        neighbor.Y >= 0 && neighbor.Y < originalImage.Height)
-                    {
-                        Color neighborColor = originalImage.GetPixel(neighbor.X, neighbor.Y);
-                        if (!ColorsAreSimilar(neighborColor, backgroundColor))
-                        {
-                            current = neighbor;
-                            currentDir = checkDir;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!found || boundaryPoints.Count > 10000) break;
-
-            } while (current != startPoint);
-        }
-
-        // Сканирование внутренней области для поиска отверстий
-        private void ScanForInnerBoundaries()
-        {
-            if (boundaryPoints.Count == 0) return;
-
-            // Находим bounding box области
-            int minX = int.MaxValue, maxX = int.MinValue;
-            int minY = int.MaxValue, maxY = int.MinValue;
-
-            foreach (Point p in boundaryPoints)
-            {
-                if (p.X < minX) minX = p.X;
-                if (p.X > maxX) maxX = p.X;
-                if (p.Y < minY) minY = p.Y;
-                if (p.Y > maxY) maxY = p.Y;
-            }
-
-            // Сканируем построчно
-            for (int y = minY + 1; y < maxY; y++)
-            {
-                List<int> intersections = new List<int>();
-
-                // Находим пересечения с границей для текущей строки
-                for (int x = minX; x <= maxX; x++)
-                {
-                    if (IsBoundaryPoint(x, y))
-                    {
-                        intersections.Add(x);
-                    }
-                }
-
-                // Обрабатываем пары пересечений
-                for (int i = 0; i < intersections.Count - 1; i += 2)
-                {
-                    int left = intersections[i];
-                    int right = intersections[i + 1];
-
-                    // Сканируем отрезок между пересечениями
-                    ScanSegmentForHoles(left + 1, right - 1, y);
+                    pictureBox.Refresh();
+                    lblStatus.Text = $"Выделение завершено. Точек границы: {boundaryPoints.Count}";
                 }
             }
         }
 
-        // Сканирование отрезка для поиска отверстий
-        private void ScanSegmentForHoles(int startX, int endX, int y)
-        {
-            Color backgroundColor = originalImage.GetPixel(0, 0);
-
-            for (int x = startX; x <= endX; x++)
-            {
-                // Если нашли точку, которая не является фоном и не является уже известной границей
-                if (!ColorsAreSimilar(originalImage.GetPixel(x, y), backgroundColor) &&
-                    !IsBoundaryPoint(x, y) && !IsInnerBoundaryPoint(x, y))
-                {
-                    // Нашли потенциальное отверстие - трассируем его границу
-                    TraceInnerBoundary(x, y);
-                }
-            }
-        }
-
-        // Трассировка границы отверстия
-        private void TraceInnerBoundary(int startX, int startY)
-        {
-            Color backgroundColor = originalImage.GetPixel(0, 0);
-            Color objectColor = originalImage.GetPixel(startX, startY);
-
-            // Находим стартовую точку на границе отверстия
-            Point startPoint = FindInnerBoundaryStartPoint(startX, startY, backgroundColor, objectColor);
-            if (startPoint.X == -1) return;
-
-            List<Point> holeBoundary = new List<Point>();
-            Point current = startPoint;
-            Point[] directions = {
-                new Point(1, 0), new Point(1, 1), new Point(0, 1), new Point(-1, 1),
-                new Point(-1, 0), new Point(-1, -1), new Point(0, -1), new Point(1, -1)
-            };
-
-            int currentDir = 0;
-
-            do
-            {
-                holeBoundary.Add(current);
-
-                // Ищем следующую граничную точку
-                bool found = false;
-                for (int i = 0; i < 8; i++)
-                {
-                    int checkDir = (currentDir + 6 + i) % 8;
-                    Point dir = directions[checkDir];
-                    Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
-
-                    if (neighbor.X >= 0 && neighbor.X < originalImage.Width &&
-                        neighbor.Y >= 0 && neighbor.Y < originalImage.Height)
-                    {
-                        Color neighborColor = originalImage.GetPixel(neighbor.X, neighbor.Y);
-                        if (!ColorsAreSimilar(neighborColor, backgroundColor))
-                        {
-                            current = neighbor;
-                            currentDir = checkDir;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!found || holeBoundary.Count > 5000) break;
-
-            } while (current != startPoint && holeBoundary.Count < 5000);
-
-            // Добавляем точки отверстия в общий список
-            innerBoundaryPoints.AddRange(holeBoundary);
-        }
-
-        // Вспомогательные методы
-        private Point FindBoundaryStartPoint(int x, int y, Color backgroundColor, Color objectColor)
-        {
-            // Ищем первый пиксель границы в окрестности
-            for (int i = Math.Max(0, x - 5); i <= Math.Min(originalImage.Width - 1, x + 5); i++)
-            {
-                for (int j = Math.Max(0, y - 5); j <= Math.Min(originalImage.Height - 1, y + 5); j++)
-                {
-                    Color current = originalImage.GetPixel(i, j);
-                    Color backgroundNeighbor = originalImage.GetPixel(Math.Max(0, i - 1), j);
-
-                    if (!ColorsAreSimilar(current, backgroundColor) &&
-                        ColorsAreSimilar(backgroundNeighbor, backgroundColor))
-                    {
-                        return new Point(i, j);
-                    }
-                }
-            }
-            return new Point(-1, -1);
-        }
-
-        private Point FindInnerBoundaryStartPoint(int x, int y, Color backgroundColor, Color objectColor)
-        {
-            // Для внутренней границы ищем точку, соседнюю с фоном
-            Point[] neighbors = {
-                new Point(-1, 0), new Point(1, 0), new Point(0, -1), new Point(0, 1)
-            };
-
-            foreach (Point dir in neighbors)
-            {
-                Point neighbor = new Point(x + dir.X, y + dir.Y);
-                if (neighbor.X >= 0 && neighbor.X < originalImage.Width &&
-                    neighbor.Y >= 0 && neighbor.Y < originalImage.Height)
-                {
-                    if (ColorsAreSimilar(originalImage.GetPixel(neighbor.X, neighbor.Y), backgroundColor))
-                    {
-                        return new Point(x, y);
-                    }
-                }
-            }
-            return new Point(-1, -1);
-        }
-
-        private Color FindObjectColor(int x, int y, Color backgroundColor)
-        {
-            // Ищем цвет объекта в окрестности
-            for (int i = Math.Max(0, x - 10); i <= Math.Min(originalImage.Width - 1, x + 10); i++)
-            {
-                for (int j = Math.Max(0, y - 10); j <= Math.Min(originalImage.Height - 1, y + 10); j++)
-                {
-                    Color color = originalImage.GetPixel(i, j);
-                    if (!ColorsAreSimilar(color, backgroundColor))
-                    {
-                        return color;
-                    }
-                }
-            }
-            return backgroundColor;
-        }
-
-        private bool IsBoundaryPoint(int x, int y)
-        {
-            return boundaryPoints.Contains(new Point(x, y));
-        }
-
-        private bool IsInnerBoundaryPoint(int x, int y)
-        {
-            return innerBoundaryPoints.Contains(new Point(x, y));
-        }
-
-        private bool ColorsAreSimilar(Color c1, Color c2, int tolerance = 50)
-        {
-            return Math.Abs(c1.R - c2.R) < tolerance &&
-                   Math.Abs(c1.G - c2.G) < tolerance &&
-                   Math.Abs(c1.B - c2.B) < tolerance;
-        }
-
-        // Рисование всех границ
-        private void DrawAllBoundaries()
-        {
-            displayImage = new Bitmap(originalImage);
-
-            using (Graphics g = Graphics.FromImage(displayImage))
-            {
-                // Рисуем внешнюю границу красным
-                if (boundaryPoints.Count > 1)
-                {
-                    Pen externalPen = new Pen(boundaryColor, 2);
-                    g.DrawLines(externalPen, boundaryPoints.ToArray());
-                }
-
-                // Рисуем внутренние границы синим
-                if (innerBoundaryPoints.Count > 0)
-                {
-                    Pen internalPen = new Pen(innerBoundaryColor, 2);
-
-                    // Группируем точки внутренних границ по отверстиям
-                    List<List<Point>> holes = GroupInnerBoundaries();
-                    foreach (var hole in holes)
-                    {
-                        if (hole.Count > 1)
-                        {
-                            g.DrawLines(internalPen, hole.ToArray());
-                        }
-                    }
-                }
-            }
-
-            pictureBox.Image = displayImage;
-        }
-
-        private List<List<Point>> GroupInnerBoundaries()
-        {
-            List<List<Point>> holes = new List<List<Point>>();
-            HashSet<Point> processed = new HashSet<Point>();
-
-            foreach (Point point in innerBoundaryPoints)
-            {
-                if (!processed.Contains(point))
-                {
-                    List<Point> hole = new List<Point>();
-                    FloodGroup(point, hole, processed);
-                    holes.Add(hole);
-                }
-            }
-
-            return holes;
-        }
-
-        private void FloodGroup(Point start, List<Point> hole, HashSet<Point> processed)
-        {
-            Queue<Point> queue = new Queue<Point>();
-            queue.Enqueue(start);
-            processed.Add(start);
-
-            Point[] neighbors = {
-                new Point(-1, 0), new Point(1, 0), new Point(0, -1), new Point(0, 1)
-            };
-
-            while (queue.Count > 0)
-            {
-                Point current = queue.Dequeue();
-                hole.Add(current);
-
-                foreach (Point dir in neighbors)
-                {
-                    Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
-                    if (innerBoundaryPoints.Contains(neighbor) && !processed.Contains(neighbor))
-                    {
-                        processed.Add(neighbor);
-                        queue.Enqueue(neighbor);
-                    }
-                }
-            }
-        }
-
-        private void btnClearBoundary_Click(object sender, EventArgs e)
+        // Очистка предыдущего выделения
+        private void ClearPreviousSelection()
         {
             if (originalImage != null)
             {
+                // Восстанавливаем оригинальное изображение
                 displayImage = new Bitmap(originalImage);
                 pictureBox.Image = displayImage;
+
+                // Очищаем списки
                 boundaryPoints.Clear();
-                innerBoundaryPoints.Clear();
-                lblStatus.Text = "Границы очищены";
-                pictureBox.Refresh();
+
+                // Сбрасываем карты
+                if (visitedMap != null)
+                    Array.Clear(visitedMap, 0, visitedMap.Length);
+                if (filledMap != null)
+                    Array.Clear(filledMap, 0, filledMap.Length);
             }
+        }
+
+        // Быстрая реализация волшебной палочки с LockBits
+        private void FastMagicWandFill(int startX, int startY)
+        {
+            if (!IsValidPoint(startX, startY)) return;
+
+            // Получаем данные изображения
+            BitmapData originalData = originalImage.LockBits(
+                new Rectangle(0, 0, originalImage.Width, originalImage.Height),
+                ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+
+            BitmapData displayData = displayImage.LockBits(
+                new Rectangle(0, 0, displayImage.Width, displayImage.Height),
+                ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+
+            try
+            {
+                int bytesPerPixel = 4;
+                int originalStride = originalData.Stride;
+                int displayStride = displayData.Stride;
+
+                byte[] originalBuffer = new byte[Math.Abs(originalStride) * originalImage.Height];
+                byte[] displayBuffer = new byte[Math.Abs(displayStride) * displayImage.Height];
+
+                // Копируем данные в буферы
+                Marshal.Copy(originalData.Scan0, originalBuffer, 0, originalBuffer.Length);
+                Marshal.Copy(displayData.Scan0, displayBuffer, 0, displayBuffer.Length);
+
+                // Получаем целевой цвет
+                Color targetColor = GetPixelFromBuffer(originalBuffer, originalStride, startX, startY);
+
+                // Сбрасываем карты
+                Array.Clear(visitedMap, 0, visitedMap.Length);
+                Array.Clear(filledMap, 0, filledMap.Length);
+                boundaryPoints.Clear();
+
+                // Быстрая заливка с использованием стека
+                Stack<Point> stack = new Stack<Point>();
+                stack.Push(new Point(startX, startY));
+                visitedMap[startX, startY] = true;
+
+                // Направления для 4-связности
+                Point[] directions = {
+                    new Point(0, -1),  // вверх
+                    new Point(1, 0),   // вправо
+                    new Point(0, 1),   // вниз
+                    new Point(-1, 0)   // влево
+                };
+
+                int filledCount = 0;
+                int maxPixels = originalImage.Width * originalImage.Height;
+
+                // Фаза 1: Заливка области
+                while (stack.Count > 0 && filledCount < maxPixels)
+                {
+                    Point current = stack.Pop();
+
+                    if (filledMap[current.X, current.Y]) continue;
+
+                    filledMap[current.X, current.Y] = true;
+                    filledCount++;
+
+                    // Закрашиваем пиксель
+                    SetPixelInBuffer(displayBuffer, displayStride, current.X, current.Y, fillColor);
+
+                    // Проверяем соседей
+                    foreach (Point dir in directions)
+                    {
+                        Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
+
+                        if (IsValidPoint(neighbor) &&
+                            !visitedMap[neighbor.X, neighbor.Y] &&
+                            ColorsAreSimilar(
+                                GetPixelFromBuffer(originalBuffer, originalStride, neighbor.X, neighbor.Y),
+                                targetColor, tolerance))
+                        {
+                            visitedMap[neighbor.X, neighbor.Y] = true;
+                            stack.Push(neighbor);
+                        }
+                    }
+                }
+
+                // Фаза 2: Быстрое нахождение границы
+                FindBoundaryFast(filledMap, displayBuffer, displayStride);
+
+                // Копируем измененный буфер обратно в изображение
+                Marshal.Copy(displayBuffer, 0, displayData.Scan0, displayBuffer.Length);
+
+            }
+            finally
+            {
+                originalImage.UnlockBits(originalData);
+                displayImage.UnlockBits(displayData);
+            }
+        }
+
+        // Быстрое нахождение границы
+        private void FindBoundaryFast(bool[,] filledMap, byte[] displayBuffer, int stride)
+        {
+            Point[] directions = {
+                new Point(0, -1), new Point(1, 0), new Point(0, 1), new Point(-1, 0)
+            };
+
+            for (int x = 0; x < originalImage.Width; x++)
+            {
+                for (int y = 0; y < originalImage.Height; y++)
+                {
+                    if (filledMap[x, y])
+                    {
+                        // Проверяем, является ли пиксель граничным
+                        bool isBoundary = false;
+
+                        foreach (Point dir in directions)
+                        {
+                            int nx = x + dir.X;
+                            int ny = y + dir.Y;
+
+                            if (!IsValidPoint(nx, ny) || !filledMap[nx, ny])
+                            {
+                                isBoundary = true;
+                                break;
+                            }
+                        }
+
+                        if (isBoundary)
+                        {
+                            boundaryPoints.Add(new Point(x, y));
+                            SetPixelInBuffer(displayBuffer, stride, x, y, boundaryColor);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Быстрое получение пикселя из буфера
+        private Color GetPixelFromBuffer(byte[] buffer, int stride, int x, int y)
+        {
+            int index = y * stride + x * 4;
+            return Color.FromArgb(
+                buffer[index + 3],  // A
+                buffer[index + 2],  // R
+                buffer[index + 1],  // G
+                buffer[index]       // B
+            );
+        }
+
+        // Быстрая установка пикселя в буфер
+        private void SetPixelInBuffer(byte[] buffer, int stride, int x, int y, Color color)
+        {
+            int index = y * stride + x * 4;
+            buffer[index] = color.B;     // B
+            buffer[index + 1] = color.G; // G
+            buffer[index + 2] = color.R; // R
+            buffer[index + 3] = color.A; // A
+        }
+
+        private bool IsValidPoint(Point point)
+        {
+            return point.X >= 0 && point.X < originalImage.Width &&
+                   point.Y >= 0 && point.Y < originalImage.Height;
+        }
+
+        private bool IsValidPoint(int x, int y)
+        {
+            return x >= 0 && x < originalImage.Width && y >= 0 && y < originalImage.Height;
+        }
+
+        private bool ColorsAreSimilar(Color c1, Color c2, int tolerance)
+        {
+            return Math.Abs(c1.R - c2.R) <= tolerance &&
+                   Math.Abs(c1.G - c2.G) <= tolerance &&
+                   Math.Abs(c1.B - c2.B) <= tolerance;
+        }
+
+        private void ToleranceTrackBar_ValueChanged(object sender, EventArgs e)
+        {
+            tolerance = toleranceTrackBar.Value;
+            lblTolerance.Text = $"Допуск: {tolerance}";
+        }
+
+        private void btnClear_Click(object sender, EventArgs e)
+        {
+            ClearPreviousSelection();
+            lblStatus.Text = "Выделение очищено";
+            pictureBox.Refresh();
         }
 
         private void btnSaveResult_Click(object sender, EventArgs e)
