@@ -2,7 +2,6 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace lab3
@@ -72,8 +71,8 @@ namespace lab3
                 if (x >= 0 && x < originalImage.Width &&
                     y >= 0 && y < originalImage.Height)
                 {
-                    // Быстрая заливка с использованием LockBits
-                    FastMagicWandFill(x, y);
+                    // Упрощенная заливка связанной области
+                    SimpleRegionFill(x, y);
 
                     pictureBox.Refresh();
                     lblStatus.Text = $"Выделение завершено. Точек границы: {boundaryPoints.Count}";
@@ -101,103 +100,70 @@ namespace lab3
             }
         }
 
-        // Быстрая реализация волшебной палочки с LockBits
-        private void FastMagicWandFill(int startX, int startY)
+        // Упрощенная заливка связанной области
+        private void SimpleRegionFill(int startX, int startY)
         {
             if (!IsValidPoint(startX, startY)) return;
 
-            // Получаем данные изображения
-            BitmapData originalData = originalImage.LockBits(
-                new Rectangle(0, 0, originalImage.Width, originalImage.Height),
-                ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            // Получаем целевой цвет
+            Color targetColor = originalImage.GetPixel(startX, startY);
 
-            BitmapData displayData = displayImage.LockBits(
-                new Rectangle(0, 0, displayImage.Width, displayImage.Height),
-                ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+            // Сбрасываем карты
+            Array.Clear(visitedMap, 0, visitedMap.Length);
+            Array.Clear(filledMap, 0, filledMap.Length);
+            boundaryPoints.Clear();
 
-            try
+            // Заливка с использованием стека
+            Stack<Point> stack = new Stack<Point>();
+            stack.Push(new Point(startX, startY));
+            visitedMap[startX, startY] = true;
+
+            // Направления для 4-связности
+            Point[] directions = {
+                new Point(0, -1),  // вверх
+                new Point(1, 0),   // вправо
+                new Point(0, 1),   // вниз
+                new Point(-1, 0)   // влево
+            };
+
+            int filledCount = 0;
+            int maxPixels = originalImage.Width * originalImage.Height;
+
+            // Фаза 1: Заливка области
+            while (stack.Count > 0 && filledCount < maxPixels)
             {
-                int bytesPerPixel = 4;
-                int originalStride = originalData.Stride;
-                int displayStride = displayData.Stride;
+                Point current = stack.Pop();
 
-                byte[] originalBuffer = new byte[Math.Abs(originalStride) * originalImage.Height];
-                byte[] displayBuffer = new byte[Math.Abs(displayStride) * displayImage.Height];
+                if (filledMap[current.X, current.Y])
+                    continue;
 
-                // Копируем данные в буферы
-                Marshal.Copy(originalData.Scan0, originalBuffer, 0, originalBuffer.Length);
-                Marshal.Copy(displayData.Scan0, displayBuffer, 0, displayBuffer.Length);
+                filledMap[current.X, current.Y] = true;
+                filledCount++;
 
-                // Получаем целевой цвет
-                Color targetColor = GetPixelFromBuffer(originalBuffer, originalStride, startX, startY);
+                // Закрашиваем пиксель на displayImage
+                displayImage.SetPixel(current.X, current.Y, fillColor);
 
-                // Сбрасываем карты
-                Array.Clear(visitedMap, 0, visitedMap.Length);
-                Array.Clear(filledMap, 0, filledMap.Length);
-                boundaryPoints.Clear();
-
-                // Быстрая заливка с использованием стека
-                Stack<Point> stack = new Stack<Point>();
-                stack.Push(new Point(startX, startY));
-                visitedMap[startX, startY] = true;
-
-                // Направления для 4-связности
-                Point[] directions = {
-                    new Point(0, -1),  // вверх
-                    new Point(1, 0),   // вправо
-                    new Point(0, 1),   // вниз
-                    new Point(-1, 0)   // влево
-                };
-
-                int filledCount = 0;
-                int maxPixels = originalImage.Width * originalImage.Height;
-
-                // Фаза 1: Заливка области
-                while (stack.Count > 0 && filledCount < maxPixels)
+                // Проверяем соседей
+                foreach (Point dir in directions)
                 {
-                    Point current = stack.Pop();
+                    Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
 
-                    if (filledMap[current.X, current.Y]) continue;
-
-                    filledMap[current.X, current.Y] = true;
-                    filledCount++;
-
-                    // Закрашиваем пиксель
-                    SetPixelInBuffer(displayBuffer, displayStride, current.X, current.Y, fillColor);
-
-                    // Проверяем соседей
-                    foreach (Point dir in directions)
+                    if (IsValidPoint(neighbor) &&
+                        !visitedMap[neighbor.X, neighbor.Y] &&
+                        ColorsAreSimilar(originalImage.GetPixel(neighbor.X, neighbor.Y), targetColor, tolerance))
                     {
-                        Point neighbor = new Point(current.X + dir.X, current.Y + dir.Y);
-
-                        if (IsValidPoint(neighbor) &&
-                            !visitedMap[neighbor.X, neighbor.Y] &&
-                            ColorsAreSimilar(
-                                GetPixelFromBuffer(originalBuffer, originalStride, neighbor.X, neighbor.Y),
-                                targetColor, tolerance))
-                        {
-                            visitedMap[neighbor.X, neighbor.Y] = true;
-                            stack.Push(neighbor);
-                        }
+                        visitedMap[neighbor.X, neighbor.Y] = true;
+                        stack.Push(neighbor);
                     }
                 }
-
-                // Фаза 2: Быстрое нахождение границы
-                FindBoundaryFast(filledMap, displayBuffer, displayStride);
-
-                // Копируем измененный буфер обратно в изображение
-                Marshal.Copy(displayBuffer, 0, displayData.Scan0, displayBuffer.Length);
-
             }
-            finally
-            {
-                originalImage.UnlockBits(originalData);
-                displayImage.UnlockBits(displayData);
-            }
+
+            // Фаза 2: Нахождение границы
+            FindBoundarySimple();
         }
 
-        // Быстрое нахождение границы
-        private void FindBoundaryFast(bool[,] filledMap, byte[] displayBuffer, int stride)
+        // Упрощенное нахождение границы
+        private void FindBoundarySimple()
         {
             Point[] directions = {
                 new Point(0, -1), new Point(1, 0), new Point(0, 1), new Point(-1, 0)
@@ -227,33 +193,11 @@ namespace lab3
                         if (isBoundary)
                         {
                             boundaryPoints.Add(new Point(x, y));
-                            SetPixelInBuffer(displayBuffer, stride, x, y, boundaryColor);
+                            displayImage.SetPixel(x, y, boundaryColor);
                         }
                     }
                 }
             }
-        }
-
-        // Быстрое получение пикселя из буфера
-        private Color GetPixelFromBuffer(byte[] buffer, int stride, int x, int y)
-        {
-            int index = y * stride + x * 4;
-            return Color.FromArgb(
-                buffer[index + 3],  // A
-                buffer[index + 2],  // R
-                buffer[index + 1],  // G
-                buffer[index]       // B
-            );
-        }
-
-        // Быстрая установка пикселя в буфер
-        private void SetPixelInBuffer(byte[] buffer, int stride, int x, int y, Color color)
-        {
-            int index = y * stride + x * 4;
-            buffer[index] = color.B;     // B
-            buffer[index + 1] = color.G; // G
-            buffer[index + 2] = color.R; // R
-            buffer[index + 3] = color.A; // A
         }
 
         private bool IsValidPoint(Point point)
